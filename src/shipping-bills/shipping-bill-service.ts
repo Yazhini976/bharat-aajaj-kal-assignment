@@ -1,4 +1,5 @@
-import { emptyBill, emptyInvoice, SavedBill, ShippingBillFormValues } from './model'
+import { Business, emptyBill, emptyInvoice, Exporter, loadingPorts, PortOption, ports, SavedBill, ShippingBillFormValues } from './model'
+import { getDemoData, saveBill } from './demo-store'
 
 const BASE_URL =
   import.meta.env.VITE_BASE_URL ||
@@ -350,7 +351,48 @@ export const API_SEED_SHIPPING_BILLS = [
 
 let internalBills: SavedBill[] = normalizeApiBills(API_SEED_SHIPPING_BILLS)
 
+// Configurable simulation settings for test scenarios
+let simulateFetchFailure = false
+let simulateSubmitFailure = false
+let mockNetworkDelayMs = 250
+
+export interface ShippingBillFormData {
+  exporters: Exporter[]
+  consignees: Business[]
+  loadingPorts: PortOption[]
+  destinationPorts: PortOption[]
+  currencies: { value: string; label: string }[]
+  units: { value: string; label: string }[]
+}
+
+export interface ShippingBillSubmissionResult {
+  success: boolean
+  referenceNumber: string
+  jobDate: string
+  savedBill: SavedBill
+  message: string
+}
+
 export const shippingBillService = {
+  /**
+   * Test scenario controls
+   */
+  setMockDelay(ms: number) {
+    mockNetworkDelayMs = ms
+  },
+  setSimulateFetchFailure(fail: boolean) {
+    simulateFetchFailure = fail
+  },
+  setSimulateSubmitFailure(fail: boolean) {
+    simulateSubmitFailure = fail
+  },
+  getSimulateFetchFailure(): boolean {
+    return simulateFetchFailure
+  },
+  getSimulateSubmitFailure(): boolean {
+    return simulateSubmitFailure
+  },
+
   /**
    * Return initial in-memory bills
    */
@@ -363,6 +405,80 @@ export const shippingBillService = {
    */
   getById(id: string | number): SavedBill | undefined {
     return internalBills.find((b) => String(b.id) === String(id))
+  },
+
+  /**
+   * Asynchronously load form initialization data (parties, ports, references).
+   * Supports deterministic failure simulation for testing error states.
+   */
+  async getShippingBillFormData(): Promise<ShippingBillFormData> {
+    await new Promise((res) => setTimeout(res, mockNetworkDelayMs))
+
+    if (simulateFetchFailure) {
+      throw new Error('Simulated network error: Failed to fetch shipping bill reference data.')
+    }
+
+    const { exporters, businesses } = getDemoData()
+    return {
+      exporters: exporters.filter((e) => !e.disabled),
+      consignees: businesses.filter((b) => b.isConsignee),
+      loadingPorts: loadingPorts.filter((p) => p.code.startsWith('IN')),
+      destinationPorts: ports,
+      currencies: [
+        { value: 'USD', label: 'USD' },
+        { value: 'EUR', label: 'EUR' },
+        { value: 'INR', label: 'INR' },
+        { value: 'AED', label: 'AED' },
+        { value: 'GBP', label: 'GBP' },
+        { value: 'SGD', label: 'SGD' }
+      ],
+      units: [
+        { value: 'PCS', label: 'PCS' },
+        { value: 'KGS', label: 'KGS' },
+        { value: 'MTR', label: 'MTR' },
+        { value: 'NOS', label: 'NOS' }
+      ]
+    }
+  },
+
+  /**
+   * Asynchronously submit shipping bill with validation and mock reference generation.
+   * Returns a typed result with mock reference and preserved bill.
+   */
+  async submitShippingBill(values: ShippingBillFormValues, draftId?: number): Promise<ShippingBillSubmissionResult> {
+    await new Promise((res) => setTimeout(res, mockNetworkDelayMs))
+
+    if (simulateSubmitFailure) {
+      throw new Error('Simulated network error: Service rejected shipping bill submission. Please retry.')
+    }
+
+    // Persist to local demo store
+    const saved = saveBill(values, draftId)
+
+    // Sync with backend API if available (with fast abort to avoid hanging offline)
+    try {
+      const payload = toHttpShippingBillPayload(values)
+      await fetch(`${BASE_URL}/api/shipping-bills`, {
+        method: 'POST',
+        headers: DEFAULT_HEADERS,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(500)
+      })
+    } catch {
+      // Offline fallback: purely mock service success
+    }
+
+    // Generate unique mock customs reference
+    const timestamp = Date.now().toString().slice(-6)
+    const mockReferenceNumber = `SB-MOCK-${saved.id || timestamp}`
+
+    return {
+      success: true,
+      referenceNumber: mockReferenceNumber,
+      jobDate: values.jobDate || new Date().toISOString().split('T')[0],
+      savedBill: saved,
+      message: `Shipping bill saved successfully with mock reference ${mockReferenceNumber}`
+    }
   },
 
   /**
@@ -388,7 +504,6 @@ export const shippingBillService = {
     }
     return internalBills
   },
-
 
   /**
    * GET /api/shipping-bills/:id/flat-file
@@ -487,4 +602,5 @@ export const shippingBillService = {
     return response.json()
   }
 }
+
 

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite -- 5173 src/index.tsx",
     "build": "NODE_ENV=production npx vite build -- src/index.tsx",
+    "test": "npx -y vitest run",
     "preview": "vite preview",
     "lint": "bash fe-zen-arch/scripts/lint.sh --fix",
     "lint-check": "bash fe-zen-arch/scripts/lint.sh",

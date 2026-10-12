@@ -13,6 +13,7 @@
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
+    "types": ["node"],
 
     /* Bundler mode */
     "moduleResolution": "bundler",
@@ -28,5 +29,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "exclude": ["node_modules/*", "fe-zen-arch/scripts/**/*"]
+  "exclude": ["node_modules/*", "fe-zen-arch/scripts/**/*", "src/**/__tests__/*"]
 }

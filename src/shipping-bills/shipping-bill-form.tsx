@@ -22,10 +22,13 @@ import { Select } from 'ui/inputs/select'
 import { Popover, PopoverContent, PopoverTrigger } from 'ui/interactive/popover'
 import { PopoverContext } from 'ui/interactive/popover-context'
 import { Tabs, TabsList, TabsTrigger } from 'ui/interactive/tabs'
-import { clsx, getContext } from 'ui/utils'
+import { clsx, clsxJoin, getContext } from 'ui/utils'
 import { getDemoData, saveBill, useDemoData } from './demo-store'
 import { shippingBillService } from './shipping-bill-service'
 import { getMarksAndNumbersOptions, MarksAndNumbersOption } from './marks-and-numbers-source'
+import { FeedbackAlert } from './components/feedback-alert'
+import { ServiceTestBar } from './components/service-test-bar'
+import { ShippingBillSkeleton } from './components/shipping-bill-skeleton'
 import {
   BillInvoiceForm,
   Branch,
@@ -275,10 +278,10 @@ function AsyncPartySelect({
         fallbackPlacements={['top-start']}
         onOpenCallback={(open) => setIsOpen(open)}>
         <PopoverTrigger
-          className={clsx(
+          className={clsxJoin(
             'outline-focus-select group flex w-full cursor-pointer items-center justify-between rounded border border-gray-200 pr-2 hover:border-gray-300 disabled:cursor-not-allowed disabled:opacity-50',
             className || 'bg-white',
-            disabled && 'cursor-not-allowed opacity-50'
+            disabled ? 'cursor-not-allowed opacity-50' : undefined
           )}
           disabled={disabled}>
           <div className="flex items-center p-2 text-sm">
@@ -288,7 +291,6 @@ function AsyncPartySelect({
           </div>
           <RrCaretDown className="size-4 text-gray-400 transition-transform group-data-[state=open]:rotate-180" />
         </PopoverTrigger>
-        <InputError name={name} />
         <PopoverContent className="overflow-hidden rounded-md border border-gray-200 bg-white shadow-lg">
           <div className="border-b border-gray-100 p-2">
             <input
@@ -327,6 +329,7 @@ function AsyncPartySelect({
           </div>
         </PopoverContent>
       </Popover>
+      <InputError<ShippingBillFormValues> name={name as any} />
     </div>
   )
 }
@@ -1214,25 +1217,41 @@ function BillEditor({ bill }: { bill?: SavedBill }) {
     // else: keep user on whichever tab they submitted from
   }, [formState.submitCount, formState.errors])
 
+  const [submissionFeedback, setSubmissionFeedback] = useState<{
+    type: 'success' | 'error'
+    title: string
+    message: string
+    referenceNumber?: string
+  } | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
   async function handleSave(data: ShippingBillFormValues) {
+    if (isSubmitting) return
+    setIsSubmitting(true)
+    setSubmissionFeedback(null)
     try {
-      const saved = saveBill(data, draftId)
-      setDraftId(saved.id)
-      console.log('Shipping bill save payload', saved.payload)
-
-      // Submit payload to backend API (POST /api/shipping-bills from shipping_bill.http)
-      try {
-        const apiResult = await shippingBillService.upsert(data)
-        console.log('API response from POST /api/shipping-bills:', apiResult)
-      } catch (apiErr) {
-        console.log('Backend API sync notice (saved locally):', apiErr)
+      const result = await shippingBillService.submitShippingBill(data, draftId)
+      setDraftId(result.savedBill.id)
+      setSubmissionFeedback({
+        type: 'success',
+        title: bill ? 'Shipping Bill Updated' : 'Shipping Bill Successfully Saved',
+        message: result.message,
+        referenceNumber: result.referenceNumber
+      })
+      toast.success(result.message)
+      if (!bill) {
+        navigate(routes.toShippingBillEdit(result.savedBill.id))
       }
-
-      toast.success(bill ? 'Shipping bill updated' : 'Shipping bill created')
-      navigate(routes.toShippingBillEdit(saved.id))
     } catch (err: any) {
-      console.error('Error saving shipping bill:', err)
-      toast.error('Failed to save shipping bill')
+      const errMsg = err?.message || 'Failed to save shipping bill. All entered values have been preserved.'
+      setSubmissionFeedback({
+        type: 'error',
+        title: 'Submission Failed',
+        message: errMsg
+      })
+      toast.error(errMsg)
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
@@ -1261,12 +1280,19 @@ function BillEditor({ bill }: { bill?: SavedBill }) {
     }
   }
 
-  const exporter = exporters.find((item) => String(item.id) === values.exporterId)
-  const consignee = businesses.find((item) => String(item.id) === values.consigneeId)
-  const totalLines = values.invoices.reduce((sum, invoice) => sum + invoice.items.length, 0)
-
   return (
     <div className="space-y-5">
+      <ServiceTestBar />
+      {submissionFeedback && (
+        <FeedbackAlert
+          type={submissionFeedback.type}
+          title={submissionFeedback.title}
+          message={submissionFeedback.message}
+          referenceNumber={submissionFeedback.referenceNumber}
+          onRetry={submissionFeedback.type === 'error' ? () => formCtx.hooks.handleSubmit(handleSave)() : undefined}
+          onDismiss={() => setSubmissionFeedback(null)}
+        />
+      )}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <button className="mb-2 text-sm text-gray-500 hover:underline" onClick={() => navigate(routes.dashboard)}>
@@ -1717,9 +1743,9 @@ function BillEditor({ bill }: { bill?: SavedBill }) {
                 Save & Next
               </Button>
             ) : (
-              <Button type="submit">
-                Save changes
-              </Button>
+              <SubmitButton>
+                {isSubmitting ? 'Saving...' : bill ? 'Save changes' : 'Create shipping bill'}
+              </SubmitButton>
             )}
           </div>
         </div>
@@ -1749,13 +1775,55 @@ function BillEditor({ bill }: { bill?: SavedBill }) {
 export default function ShippingBillPage() {
   const { id } = useParams<{ id?: string }>()
   const { bills } = useDemoData()
+  const [isInitializing, setIsInitializing] = useState(true)
+  const [initError, setInitError] = useState<string | null>(null)
+
+  const loadFormData = async () => {
+    setIsInitializing(true)
+    setInitError(null)
+    try {
+      await shippingBillService.getShippingBillFormData()
+    } catch (err: any) {
+      setInitError(err?.message || 'Failed to fetch form reference data from service.')
+    } finally {
+      setIsInitializing(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadFormData()
+  }, [])
+
+  if (isInitializing) {
+    return <ShippingBillSkeleton />
+  }
+
+  if (initError) {
+    return (
+      <div className="space-y-4">
+        <FeedbackAlert
+          type="error"
+          title="Initialization Error"
+          message={initError}
+          onRetry={loadFormData}
+        />
+        <Button variant="outline" onClick={() => navigate(routes.dashboard)}>
+          Back to list
+        </Button>
+      </div>
+    )
+  }
+
   const bill = id ? (bills.find((item) => item.id === Number(id)) || shippingBillService.getById(id)) : undefined
-  if (id && !bill)
+  if (id && !bill) {
     return (
       <div className="space-y-3">
         <h1 className="text-xl font-semibold">Shipping bill not found</h1>
         <Button onClick={() => navigate(routes.dashboard)}>Back to list</Button>
       </div>
     )
+  }
+
   return <BillEditor key={id ?? 'new'} bill={bill} />
 }
+
